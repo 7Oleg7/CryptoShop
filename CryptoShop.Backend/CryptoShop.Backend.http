@@ -1,0 +1,6 @@
+@CryptoShop.Backend_HostAddress = http://localhost:5082
+
+GET {{CryptoShop.Backend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
