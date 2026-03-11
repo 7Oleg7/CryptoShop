@@ -1,7 +1,13 @@
-﻿using CryptoShop.Backend.Models;
-using Microsoft.AspNetCore.Mvc;
-using CryptoShop.Backend.Data;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using BCrypt.Net;
+using CryptoShop.Backend.Services;
+using CryptoShop.Backend.Models;
+using CryptoShop.Backend.DTOs;
+using MongoDB.Driver;
 
 namespace CryptoShop.Backend.Controllers
 {
@@ -9,136 +15,93 @@ namespace CryptoShop.Backend.Controllers
     [ApiController]
     public class AuthController : ControllerBase
     {
-        private readonly AppDbContext _db;
+        private readonly MongoDbService _mongoDb;
+        private readonly IConfiguration _configuration;
 
-        public AuthController(AppDbContext db)
+        public AuthController(MongoDbService mongoDb, IConfiguration configuration)
         {
-            _db = db;
+            _mongoDb = mongoDb;
+            _configuration = configuration;
         }
 
-        // POST: api/auth/register
         [HttpPost("register")]
-        public async Task<ActionResult> Register(RegisterData data)
+        public async Task<IActionResult> Register(RegisterDto registerDto)
         {
-            var existingUser = await _db.Users
-                .FirstOrDefaultAsync(u => u.Email == data.Email);
+            var existingUser = await _mongoDb.Users
+                .Find(u => u.Username == registerDto.Username || u.Email == registerDto.Email)
+                .FirstOrDefaultAsync();
 
             if (existingUser != null)
-            {
-                return BadRequest("Этот email уже зарегистрирован");
-            }
+                return BadRequest("User already exists");
 
             var user = new User
             {
-                Email = data.Email,
-                Password = data.Password,
-                Name = data.Name,
-                Phone = data.Phone,
-                Address = data.Address
+                Email = registerDto.Email,
+                Username = registerDto.Username,
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword(registerDto.Password),
+                FirstName = registerDto.FirstName,
+                LastName = registerDto.LastName,
+                PhoneNumber = registerDto.PhoneNumber,
+                Role = "User"
             };
 
-            _db.Users.Add(user);
-            await _db.SaveChangesAsync();
-
-            return Ok(new
-            {
-                user.Id,
-                user.Email,
-                user.Name,
-                user.Phone,
-                user.Address,
-                user.Role,
-                user.IsBlocked
-            });
+            await _mongoDb.Users.InsertOneAsync(user);
+            return Ok(new { message = "Registration successful" });
         }
 
-        // POST: api/auth/login
         [HttpPost("login")]
-        public async Task<ActionResult> Login(LoginData data)
+        public async Task<IActionResult> Login(LoginDto loginDto)
         {
-            var user = await _db.Users
-                .FirstOrDefaultAsync(u => u.Email == data.Email && u.Password == data.Password);
+            var user = await _mongoDb.Users
+                .Find(u => u.Username == loginDto.Username)
+                .FirstOrDefaultAsync();
 
-            if (user == null)
-            {
-                return Unauthorized("Неверный email или пароль");
-            }
+            if (user == null || !BCrypt.Net.BCrypt.Verify(loginDto.Password, user.PasswordHash))
+                return Unauthorized("Invalid username or password");
 
             if (user.IsBlocked)
-            {
-                return Unauthorized("Пользователь заблокирован");
-            }
+                return Unauthorized("Your account has been blocked");
+
+            var token = GenerateJwtToken(user);
 
             return Ok(new
             {
-                user.Id,
-                user.Email,
-                user.Name,
-                user.Phone,
-                user.Address,
-                user.Role,
-                user.IsBlocked
+                token,
+                user = new UserDto
+                {
+                    Id = user.Id,
+                    Email = user.Email,
+                    Username = user.Username,
+                    FirstName = user.FirstName,
+                    LastName = user.LastName,
+                    PhoneNumber = user.PhoneNumber,
+                    Address = user.Address,
+                    Role = user.Role,
+                    IsBlocked = user.IsBlocked
+                }
             });
         }
 
-        // PUT: api/auth/profile/{id}
-        [HttpPut("profile/{id}")]
-        public async Task<ActionResult> UpdateProfile(int id, UpdateData data)
+        private string GenerateJwtToken(User user)
         {
-            var user = await _db.Users.FindAsync(id);
-
-            if (user == null)
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var key = Encoding.ASCII.GetBytes(_configuration["Jwt:Key"] ?? "DefaultSecretKeyForDevelopment123!");
+            var tokenDescriptor = new SecurityTokenDescriptor
             {
-                return NotFound("Пользователь не найден");
-            }
+                Subject = new ClaimsIdentity(new[]
+                {
+                    new Claim(ClaimTypes.NameIdentifier, user.Id),
+                    new Claim(ClaimTypes.Name, user.Username ?? ""),
+                    new Claim(ClaimTypes.Email, user.Email ?? ""),
+                    new Claim(ClaimTypes.Role, user.Role ?? "User")
+                }),
+                Expires = DateTime.UtcNow.AddDays(7),
+                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key),
+                    SecurityAlgorithms.HmacSha256Signature)
+            };
 
-            if (!string.IsNullOrEmpty(data.Name))
-                user.Name = data.Name;
-
-            if (!string.IsNullOrEmpty(data.Phone))
-                user.Phone = data.Phone;
-
-            if (!string.IsNullOrEmpty(data.Address))
-                user.Address = data.Address;
-
-            if (!string.IsNullOrEmpty(data.NewPassword))
-                user.Password = data.NewPassword;
-
-            await _db.SaveChangesAsync();
-
-            return Ok(new
-            {
-                user.Id,
-                user.Email,
-                user.Name,
-                user.Phone,
-                user.Address,
-                user.Role,
-                user.IsBlocked
-            });
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+            return tokenHandler.WriteToken(token);
         }
-    }
-
-    public class RegisterData
-    {
-        public string? Email { get; set; }
-        public string? Password { get; set; }
-        public string? Name { get; set; }
-        public string? Phone { get; set; }
-        public string? Address { get; set; }
-    }
-
-    public class LoginData
-    {
-        public string? Email { get; set; }
-        public string? Password { get; set; }
-    }
-
-    public class UpdateData
-    {
-        public string? Name { get; set; }
-        public string? Phone { get; set; }
-        public string? Address { get; set; }
-        public string? NewPassword { get; set; }
     }
 }

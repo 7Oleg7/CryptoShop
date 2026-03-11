@@ -1,15 +1,30 @@
-﻿namespace CryptoShop.Backend.Models
+﻿using MongoDB.Bson;
+using MongoDB.Bson.Serialization.Attributes;
+
+namespace CryptoShop.Backend.Models
 {
     public class Review
     {
-        public int Id { get; set; }
-        public int ProductId { get; set; }
-        public Product Product { get; set; }
-
-        public int UserId { get; set; }
-        public User User { get; set; }
+        [BsonId]
+        [BsonRepresentation(BsonType.ObjectId)]
+        public string Id { get; set; }
+        
+        [BsonElement("userId")]
+        public string UserId { get; set; }
+        
+        [BsonElement("userName")]
+        public string UserName { get; set; }
+        
+        [BsonElement("productId")]
+        public string ProductId { get; set; }
+        
+        [BsonElement("rating")]
         public int Rating { get; set; }
+        
+        [BsonElement("comment")]
         public string Comment { get; set; }
-        public DateTime Date { get; set; }
+        
+        [BsonElement("createdAt")]
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }

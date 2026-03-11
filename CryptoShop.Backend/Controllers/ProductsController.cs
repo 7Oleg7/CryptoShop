@@ -1,7 +1,9 @@
-﻿using CryptoShop.Backend.Data;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
+using CryptoShop.Backend.Services;
 using CryptoShop.Backend.Models;
-using Microsoft.EntityFrameworkCore;
+using CryptoShop.Backend.DTOs;
+using MongoDB.Driver;
 
 namespace CryptoShop.Backend.Controllers
 {
@@ -9,159 +11,158 @@ namespace CryptoShop.Backend.Controllers
     [ApiController]
     public class ProductsController : ControllerBase
     {
-        private readonly AppDbContext _db;
+        private readonly MongoDbService _mongoDb;
+        private readonly ILogger<ProductsController> _logger;
 
-        public ProductsController(AppDbContext db)
+        public ProductsController(MongoDbService mongoDb, ILogger<ProductsController> logger)
         {
-            _db = db;
+            _mongoDb = mongoDb;
+            _logger = logger;
         }
 
-        // GET: api/products (все продукты с фильтрацией)
         [HttpGet]
-        public async Task<ActionResult> GetAllProducts(
-            string category = "",
-            decimal? minPrice = null,
-            decimal? maxPrice = null,
-            string search = "")
+        public async Task<ActionResult<IEnumerable<Product>>> GetProducts(
+            [FromQuery] string? category = null,
+            [FromQuery] decimal? minPrice = null,
+            [FromQuery] decimal? maxPrice = null,
+            [FromQuery] string? search = null)
         {
-            List<Product> products = await _db.Products
-                .Include(p => p.Category)
-                .ToListAsync();
-
-            List<Product> filtered = new List<Product>();
-
-            foreach (Product product in products)
+            try
             {
-                bool matches = true;
-
-                // По категории
+                var filter = Builders<Product>.Filter.Empty;
+                
                 if (!string.IsNullOrEmpty(category))
                 {
-                    if (product.Category == null || product.Category.Name != category)
-                    {
-                        matches = false;
-                    }
+                    filter = filter & Builders<Product>.Filter.Eq(p => p.Category, category);
                 }
-
-                // По минимальной цене
-                if (minPrice.HasValue && product.Price < minPrice.Value)
+                
+                if (minPrice.HasValue)
                 {
-                    matches = false;
+                    filter = filter & Builders<Product>.Filter.Gte(p => p.Price, minPrice.Value);
                 }
-
-                // По максимальной цене
-                if (maxPrice.HasValue && product.Price > maxPrice.Value)
+                
+                if (maxPrice.HasValue)
                 {
-                    matches = false;
+                    filter = filter & Builders<Product>.Filter.Lte(p => p.Price, maxPrice.Value);
                 }
-
-                // По поиску в названии
+                
                 if (!string.IsNullOrEmpty(search))
                 {
-                    if (!product.Name.ToLower().Contains(search.ToLower()))
-                    {
-                        matches = false;
-                    }
+                    filter = filter & Builders<Product>.Filter.Regex(p => p.Name, new MongoDB.Bson.BsonRegularExpression(search, "i"));
                 }
-
-                if (matches)
-                {
-                    filtered.Add(product);
-                }
+                
+                var products = await _mongoDb.Products.Find(filter).ToListAsync();
+                return Ok(products);
             }
-
-            return Ok(filtered);
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting products");
+                return StatusCode(500, new { error = "Internal server error" });
+            }
         }
 
-        // GET: api/products/{id}
         [HttpGet("{id}")]
-        public async Task<ActionResult> GetProductById(int id)
+        public async Task<ActionResult<Product>> GetProduct(string id)
         {
-            Product? product = await _db.Products
-                .Include(p => p.Category)
-                .FirstOrDefaultAsync(p => p.Id == id);
-
-            if (product == null)
+            try
             {
-                return NotFound("Товар не найден");
+                var product = await _mongoDb.GetProductByIdAsync(id);
+                if (product == null) 
+                    return NotFound();
+                    
+                return Ok(product);
             }
-
-            await _db.Entry(product)
-                .Collection(p => p.Reviews)
-                .LoadAsync();
-
-            // Загрузка пользователя для каждого отзыва
-            foreach (Review review in product.Reviews)
+            catch (Exception ex)
             {
-                await _db.Entry(review)
-                    .Reference(r => r.User)
-                    .LoadAsync();
+                _logger.LogError(ex, "Error getting product {Id}", id);
+                return StatusCode(500, new { error = "Internal server error" });
             }
-
-            return Ok(product);
         }
 
-        // POST: api/products (только админ)
         [HttpPost]
-        public async Task<ActionResult> CreateProduct(Product newProduct)
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<Product>> CreateProduct(CreateProductDto createDto)
         {
-            // Админ ли пользователь
-            string? userRole = Request.Headers["X-User-Role"].FirstOrDefault();
-
-            if (userRole != "Admin")
+            try
             {
-                return StatusCode(403, "Только администратор может создавать товары");
+                var product = new Product
+                {
+                    Name = createDto.Name,
+                    Description = createDto.Description ?? "",
+                    Price = createDto.Price,
+                    ImageUrl = createDto.ImageUrl ?? "",
+                    StockQuantity = createDto.StockQuantity,
+                    Category = createDto.Category,
+                    Specifications = createDto.Specifications ?? new Dictionary<string, string>()
+                };
+
+                await _mongoDb.CreateProductAsync(product);
+                return CreatedAtAction(nameof(GetProduct), new { id = product.Id }, product);
             }
-
-            _db.Products.Add(newProduct);
-            await _db.SaveChangesAsync();
-
-            return Ok(newProduct);
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating product");
+                return StatusCode(500, new { error = "Internal server error" });
+            }
         }
 
-        // PUT: api/products/{id} (только админ)
         [HttpPut("{id}")]
-        public async Task<ActionResult> UpdateProduct(int id, Product updatedProduct)
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> UpdateProduct(string id, UpdateProductDto updateDto)
         {
-            if (id != updatedProduct.Id)
+            try
             {
-                return BadRequest("ID в запросе не совпадает с ID товара");
+                var product = await _mongoDb.GetProductByIdAsync(id);
+                if (product == null)
+                    return NotFound();
+
+                if (updateDto.Name != null)
+                    product.Name = updateDto.Name;
+                if (updateDto.Description != null)
+                    product.Description = updateDto.Description;
+                if (updateDto.Price.HasValue)
+                    product.Price = updateDto.Price.Value;
+                if (updateDto.ImageUrl != null)
+                    product.ImageUrl = updateDto.ImageUrl;
+                if (updateDto.StockQuantity.HasValue)
+                    product.StockQuantity = updateDto.StockQuantity.Value;
+                if (updateDto.Category != null)
+                    product.Category = updateDto.Category;
+                if (updateDto.Specifications != null)
+                    product.Specifications = updateDto.Specifications;
+
+                var updated = await _mongoDb.UpdateProductAsync(id, product);
+                
+                if (updated)
+                    return NoContent();
+                else
+                    return NotFound();
             }
-
-            Product? existingProduct = await _db.Products.FindAsync(id);
-
-            if (existingProduct == null)
+            catch (Exception ex)
             {
-                return NotFound("Товар не найден");
+                _logger.LogError(ex, "Error updating product {Id}", id);
+                return StatusCode(500, new { error = "Internal server error" });
             }
-
-            existingProduct.Name = updatedProduct.Name;
-            existingProduct.Description = updatedProduct.Description;
-            existingProduct.Price = updatedProduct.Price;
-            existingProduct.ImageUrl = updatedProduct.ImageUrl;
-            existingProduct.CategoryId = updatedProduct.CategoryId;
-            existingProduct.Stock = updatedProduct.Stock;
-
-            await _db.SaveChangesAsync();
-
-            return Ok(existingProduct);
         }
 
-        // DELETE: api/products/{id} (только админ)
         [HttpDelete("{id}")]
-        public async Task<ActionResult> DeleteProduct(int id)
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> DeleteProduct(string id)
         {
-            Product? product = await _db.Products.FindAsync(id);
-
-            if (product == null)
+            try
             {
-                return NotFound("Товар не найден");
+                var deleted = await _mongoDb.DeleteProductAsync(id);
+                
+                if (deleted)
+                    return NoContent();
+                else
+                    return NotFound();
             }
-
-            _db.Products.Remove(product);
-            await _db.SaveChangesAsync();
-
-            return Ok("Товар удален");
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting product {Id}", id);
+                return StatusCode(500, new { error = "Internal server error" });
+            }
         }
     }
 }

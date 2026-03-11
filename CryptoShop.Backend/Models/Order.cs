@@ -1,20 +1,39 @@
-﻿using System.ComponentModel.DataAnnotations;
+﻿using MongoDB.Bson;
+using MongoDB.Bson.Serialization.Attributes;
 
 namespace CryptoShop.Backend.Models
 {
     public class Order
     {
-        [Key]
-        public int Id { get; set; }
-        public string OrderNumber { get; set; }
-        public int UserId { get; set; }
-        public User User { get; set; }
-        public DateTime OrderDate { get; set; }
+        [BsonId]
+        [BsonRepresentation(BsonType.ObjectId)]
+        public string Id { get; set; }
+        
+        [BsonElement("userId")]
+        public string UserId { get; set; }
+        
+        [BsonElement("orderDate")]
+        public DateTime OrderDate { get; set; } = DateTime.UtcNow;
+        
+        [BsonElement("totalAmount")]
         public decimal TotalAmount { get; set; }
-        public string Phone { get; set; }
+        
+        [BsonElement("status")]
         public string Status { get; set; } = "New";
-        public string DeliveryAddress { get; set; }
+        
+        [BsonElement("shippingAddress")]
+        public string ShippingAddress { get; set; }
+        
+        [BsonElement("contactPhone")]
+        public string ContactPhone { get; set; }
+        
+        [BsonElement("contactName")]
+        public string ContactName { get; set; }
+        
+        [BsonElement("transactionHash")]
         public string TransactionHash { get; set; }
-        public List<OrderItem> Items { get; set; }
+        
+        [BsonElement("items")]
+        public List<OrderItem> Items { get; set; } = new();
     }
 }

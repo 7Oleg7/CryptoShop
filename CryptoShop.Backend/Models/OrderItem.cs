@@ -1,13 +1,20 @@
-﻿namespace CryptoShop.Backend.Models
+﻿using MongoDB.Bson;
+using MongoDB.Bson.Serialization.Attributes;
+
+namespace CryptoShop.Backend.Models
 {
     public class OrderItem
     {
-        public int Id { get; set; }
-        public int OrderId { get; set; }
-        public Order Order { get; set; }
-        public int ProductId { get; set; }
-        public Product Product { get; set; }
+        [BsonElement("productId")]
+        public string ProductId { get; set; }
+        
+        [BsonElement("productName")]
+        public string ProductName { get; set; }
+        
+        [BsonElement("quantity")]
         public int Quantity { get; set; }
-        public decimal Price { get; set; }
+        
+        [BsonElement("unitPrice")]
+        public decimal UnitPrice { get; set; }
     }
 }

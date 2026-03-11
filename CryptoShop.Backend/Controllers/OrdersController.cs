@@ -1,7 +1,8 @@
-﻿using CryptoShop.Backend.Models;
-using CryptoShop.Backend.Data;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Mvc;
+using CryptoShop.Backend.Services;
+using CryptoShop.Backend.Models;
+using CryptoShop.Backend.DTOs;
+using MongoDB.Driver;
 
 namespace CryptoShop.Backend.Controllers
 {
@@ -9,129 +10,153 @@ namespace CryptoShop.Backend.Controllers
     [ApiController]
     public class OrdersController : ControllerBase
     {
-        private readonly AppDbContext _db;
+        private readonly MongoDbService _mongoDb;
 
-        public OrdersController(AppDbContext db)
+        public OrdersController(MongoDbService mongoDb)
         {
-            _db = db;
+            _mongoDb = mongoDb;
         }
 
-        // POST: api/orders/create
-        [HttpPost("create")]
-        public async Task<ActionResult> CreateOrder(OrderData data)
+        [HttpGet]
+        public async Task<ActionResult<IEnumerable<OrderDto>>> GetOrders()
         {
-            string orderNumber = "ORD-" + DateTime.Now.Ticks;
-
-            Order order = new Order();
-            order.OrderNumber = orderNumber;
-            order.UserId = data.UserId;
-            order.OrderDate = DateTime.Now;
-            order.TotalAmount = data.TotalAmount;
-            order.DeliveryAddress = data.DeliveryAddress;
-            order.Phone = data.Phone;
-            order.Status = "New";
-            order.TransactionHash = "";
-
-            order.Items = new List<OrderItem>();
-
-            foreach (var item in data.Items)
+            var orders = await _mongoDb.Orders.Find(_ => true).ToListAsync();
+            
+            var orderDtos = new List<OrderDto>();
+            foreach (var order in orders)
             {
-                OrderItem orderItem = new OrderItem();
-                orderItem.ProductId = item.ProductId;
-                orderItem.Quantity = item.Quantity;
-                orderItem.Price = item.Price;
-
-                order.Items.Add(orderItem);
-            }
-
-            _db.Orders.Add(order);
-            await _db.SaveChangesAsync();
-
-            return Ok(new
-            {
-                OrderId = order.Id,
-                OrderNumber = order.OrderNumber
-            });
-        }
-
-        // POST: api/orders/confirm-payment
-        [HttpPost("confirm-payment")]
-        public async Task<ActionResult> ConfirmPayment(int orderId, string transactionHash)
-        {
-            Order? order = await _db.Orders.FindAsync(orderId);
-
-            if (order == null)
-            {
-                return NotFound("Заказ не найден");
-            }
-
-            order.Status = "Paid";
-            order.TransactionHash = transactionHash;
-
-            await _db.SaveChangesAsync();
-
-            return Ok("Оплата подтверждена");
-        }
-
-        // GET: api/orders/user/{userId}
-        [HttpGet("user/{userId}")]
-        public async Task<ActionResult> GetUserOrders(int userId)
-        {
-            // Все заказы пользователя
-            List<Order> orders = await _db.Orders
-                .Where(o => o.UserId == userId)
-                .OrderByDescending(o => o.OrderDate)
-                .ToListAsync();
-
-            // Загрузка товара для каждого заказа
-            foreach (Order order in orders)
-            {
-                await _db.Entry(order)
-                    .Collection(o => o.Items)
-                    .LoadAsync();
-
-                foreach (OrderItem item in order.Items)
+                var user = await _mongoDb.Users.Find(u => u.Id == order.UserId).FirstOrDefaultAsync();
+                
+                var orderDto = new OrderDto
                 {
-                    await _db.Entry(item)
-                        .Reference(i => i.Product)
-                        .LoadAsync();
-                }
+                    Id = order.Id,
+                    OrderDate = order.OrderDate,
+                    TotalAmount = order.TotalAmount,
+                    Status = order.Status,
+                    ShippingAddress = order.ShippingAddress,
+                    ContactPhone = order.ContactPhone,
+                    ContactName = order.ContactName,
+                    TransactionHash = order.TransactionHash,
+                    Items = order.Items.Select(i => new OrderItemDto
+                    {
+                        ProductId = i.ProductId,
+                        ProductName = i.ProductName,
+                        Quantity = i.Quantity,
+                        UnitPrice = i.UnitPrice,
+                        TotalPrice = i.Quantity * i.UnitPrice
+                    }).ToList()
+                };
+                orderDtos.Add(orderDto);
             }
 
-            return Ok(orders);
+            return Ok(orderDtos.OrderByDescending(o => o.OrderDate));
         }
 
-        // PUT: api/orders/{id}/status (только для админа)
-        [HttpPut("{id}/status")]
-        public async Task<ActionResult> UpdateStatus(int id, string newStatus)
+        [HttpGet("user/{userId}")]
+        public async Task<ActionResult<IEnumerable<OrderDto>>> GetUserOrders(string userId)
         {
-            Order? order = await _db.Orders.FindAsync(id);
-
-            if (order == null)
+            var orders = await _mongoDb.Orders.Find(o => o.UserId == userId).ToListAsync();
+            
+            var orderDtos = orders.Select(order => new OrderDto
             {
-                return NotFound("Заказ не найден");
-            }
+                Id = order.Id,
+                OrderDate = order.OrderDate,
+                TotalAmount = order.TotalAmount,
+                Status = order.Status,
+                ShippingAddress = order.ShippingAddress,
+                ContactPhone = order.ContactPhone,
+                ContactName = order.ContactName,
+                TransactionHash = order.TransactionHash,
+                Items = order.Items.Select(i => new OrderItemDto
+                {
+                    ProductId = i.ProductId,
+                    ProductName = i.ProductName,
+                    Quantity = i.Quantity,
+                    UnitPrice = i.UnitPrice,
+                    TotalPrice = i.Quantity * i.UnitPrice
+                }).ToList()
+            }).OrderByDescending(o => o.OrderDate);
 
-            order.Status = newStatus;
-            await _db.SaveChangesAsync();
-
-            return Ok("Статус обновлен");
+            return Ok(orderDtos);
         }
-    }
 
-    public class OrderData
-    {
-        public int UserId { get; set; }
-        public decimal TotalAmount { get; set; }
-        public string? DeliveryAddress { get; set; }
-        public string? Phone { get; set; }
-        public List<OrderItemData>? Items { get; set; }
-    }
+        [HttpGet("{id}")]
+        public async Task<ActionResult<OrderDto>> GetOrder(string id)
+        {
+            var order = await _mongoDb.Orders.Find(o => o.Id == id).FirstOrDefaultAsync();
+            if (order == null)
+                return NotFound();
 
-    public class OrderItemData
-    {
-        public int ProductId { get; set; }
-        public int Quantity { get; set; }
-        public decimal Price { get; set; }
+            var user = await _mongoDb.Users.Find(u => u.Id == order.UserId).FirstOrDefaultAsync();
+
+            var orderDto = new OrderDto
+            {
+                Id = order.Id,
+                OrderDate = order.OrderDate,
+                TotalAmount = order.TotalAmount,
+                Status = order.Status,
+                ShippingAddress = order.ShippingAddress,
+                ContactPhone = order.ContactPhone,
+                ContactName = order.ContactName,
+                TransactionHash = order.TransactionHash,
+                Items = order.Items.Select(i => new OrderItemDto
+                {
+                    ProductId = i.ProductId,
+                    ProductName = i.ProductName,
+                    Quantity = i.Quantity,
+                    UnitPrice = i.UnitPrice,
+                    TotalPrice = i.Quantity * i.UnitPrice
+                }).ToList()
+            };
+
+            return Ok(orderDto);
+        }
+
+        [HttpPost]
+        public async Task<ActionResult<Order>> CreateOrder(CreateOrderDto createDto)
+        {
+            var userId = "67d8f8c3b4c5d6e7f8a9b0c1";
+
+            var order = new Order
+            {
+                UserId = userId,
+                ShippingAddress = createDto.ShippingAddress,
+                ContactPhone = createDto.ContactPhone,
+                ContactName = createDto.ContactName,
+                Status = "New",
+                OrderDate = DateTime.UtcNow,
+                TotalAmount = createDto.Items.Sum(i => i.Quantity * i.UnitPrice),
+                Items = createDto.Items.Select(i => new OrderItem
+                {
+                    ProductId = i.ProductId.ToString(),
+                    ProductName = i.ProductName,
+                    Quantity = i.Quantity,
+                    UnitPrice = i.UnitPrice
+                }).ToList()
+            };
+
+            await _mongoDb.Orders.InsertOneAsync(order);
+            
+            var update = Builders<User>.Update.Push(u => u.OrderIds, order.Id);
+            await _mongoDb.Users.UpdateOneAsync(u => u.Id == userId, update);
+
+            return CreatedAtAction(nameof(GetOrder), new { id = order.Id }, order);
+        }
+
+        [HttpPut("{id}/status")]
+        public async Task<IActionResult> UpdateOrderStatus(string id, UpdateOrderStatusDto statusDto)
+        {
+            var order = await _mongoDb.Orders.Find(o => o.Id == id).FirstOrDefaultAsync();
+            if (order == null)
+                return NotFound();
+
+            order.Status = statusDto.Status;
+            if (!string.IsNullOrEmpty(statusDto.TransactionHash))
+                order.TransactionHash = statusDto.TransactionHash;
+
+            await _mongoDb.Orders.ReplaceOneAsync(o => o.Id == id, order);
+
+            return NoContent();
+        }
     }
 }

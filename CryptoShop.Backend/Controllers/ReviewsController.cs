@@ -1,7 +1,8 @@
-﻿using CryptoShop.Backend.Models;
-using Microsoft.AspNetCore.Mvc;
-using CryptoShop.Backend.Data;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Mvc;
+using CryptoShop.Backend.Services;
+using CryptoShop.Backend.Models;
+using CryptoShop.Backend.DTOs;
+using MongoDB.Driver;
 
 namespace CryptoShop.Backend.Controllers
 {
@@ -9,62 +10,69 @@ namespace CryptoShop.Backend.Controllers
     [ApiController]
     public class ReviewsController : ControllerBase
     {
-        private readonly AppDbContext _db;
+        private readonly MongoDbService _mongoDb;
 
-        public ReviewsController(AppDbContext db)
+        public ReviewsController(MongoDbService mongoDb)
         {
-            _db = db;
+            _mongoDb = mongoDb;
         }
 
-        // GET: api/reviews/product/{productId}
         [HttpGet("product/{productId}")]
-        public async Task<ActionResult> GetReviews(int productId)
+        public async Task<ActionResult<IEnumerable<ReviewDto>>> GetProductReviews(string productId)
         {
-            // Все отзывы для конкретного товара
-            List<Review> reviews = await _db.Reviews
-                .Where(r => r.ProductId == productId)
-                .OrderByDescending(r => r.Date)
+            var reviews = await _mongoDb.Reviews
+                .Find(r => r.ProductId == productId)
+                .SortByDescending(r => r.CreatedAt)
                 .ToListAsync();
 
-            // Загрузка инфы о пользователе для каждого отзыва
-            foreach (Review review in reviews)
+            return Ok(reviews.Select(r => new ReviewDto
             {
-                await _db.Entry(review)
-                    .Reference(r => r.User)
-                    .LoadAsync();
-            }
-
-            return Ok(reviews);
+                Id = r.Id,
+                UserId = r.UserId,
+                UserName = r.UserName,
+                ProductId = r.ProductId,
+                Rating = r.Rating,
+                Comment = r.Comment,
+                CreatedAt = r.CreatedAt
+            }));
         }
 
-        // POST: api/reviews
         [HttpPost]
-        public async Task<ActionResult> AddReview(ReviewData data)
+        public async Task<ActionResult<Review>> CreateReview(CreateReviewDto createDto)
         {
-            Review review = new Review();
-            review.ProductId = data.ProductId;
-            review.UserId = data.UserId;
-            review.Rating = data.Rating;
-            review.Comment = data.Comment;
-            review.Date = DateTime.Now;
+            var userId = "67d8f8c3b4c5d6e7f8a9b0c1";
+            var userName = "current_user";
 
-            _db.Reviews.Add(review);
-            await _db.SaveChangesAsync();
+            var existingReview = await _mongoDb.Reviews
+                .Find(r => r.UserId == userId && r.ProductId == createDto.ProductId)
+                .FirstOrDefaultAsync();
 
-            // Загрузка пользователя для ответа
-            await _db.Entry(review)
-                .Reference(r => r.User)
-                .LoadAsync();
+            if (existingReview != null)
+                return BadRequest("You have already reviewed this product");
 
-            return Ok(review);
+            var review = new Review
+            {
+                UserId = userId,
+                UserName = userName,
+                ProductId = createDto.ProductId,
+                Rating = createDto.Rating,
+                Comment = createDto.Comment ?? "",
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _mongoDb.Reviews.InsertOneAsync(review);
+            return CreatedAtAction(nameof(GetProductReviews), new { productId = review.ProductId }, review);
         }
-    }
 
-    public class ReviewData
-    {
-        public int ProductId { get; set; }
-        public int UserId { get; set; }
-        public int Rating { get; set; }
-        public string? Comment { get; set; }
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteReview(string id)
+        {
+            var review = await _mongoDb.Reviews.Find(r => r.Id == id).FirstOrDefaultAsync();
+            if (review == null)
+                return NotFound();
+
+            await _mongoDb.Reviews.DeleteOneAsync(r => r.Id == id);
+            return NoContent();
+        }
     }
 }
